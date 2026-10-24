@@ -22,6 +22,16 @@ void inpw_mouse_update(void);
 void inpw_mouse_set_bounds(int w, int h);
 void inpw_cursor_update(void);
 
+#ifdef HAVE_WPADQUEUE
+void inpw_wpadqueue_link(void);
+#endif
+
+#ifdef HAVE_GCADAPTER
+void inpw_gcadapter_init(bool enabled);
+void inpw_gcadapter_shutdown(void);
+void inpw_gcadapter_update(void);
+#endif
+
 #ifdef HAVE_TABLET
 #include "input_tablet.h"
 /* the uDraw, for the TB_* calls in libinput_tablet.c */

@@ -14,6 +14,8 @@ WITH_WUPC      ?= 0
 WITH_SICKSAXIS ?= 0
 WITH_TABLET    ?= 0
 WITH_MIC       ?= 0
+WITH_GCADAPTER ?= 0
+WITH_WPADQUEUE ?= 0
 PORTLIBS       ?= $(CURDIR)/portlibs/ppc
 CFLAGS += -I$(PORTLIBS)/include
 ifeq ($(WITH_WIIDRC),1)
@@ -33,10 +35,18 @@ endif
 ifeq ($(WITH_MIC),1)
  CFLAGS += -DHAVE_MIC
 endif
+# The GameCube controller adapter for Wii U
+ifeq ($(WITH_GCADAPTER),1)
+ CFLAGS += -DHAVE_GCADAPTER
+endif
+# Room for a fourth Wii Remote and the Balance Board (links with --wrap=wiiuse_init_cmd_queue)
+ifeq ($(WITH_WPADQUEUE),1)
+ CFLAGS += -DHAVE_WPADQUEUE
+endif
 
 SRCS    := $(wildcard source/*.c)
 # one folder of objects for each set of options, so switching them rebuilds
-BUILD   := build/$(WITH_WIIDRC)$(WITH_WUPC)$(WITH_SICKSAXIS)$(WITH_TABLET)$(WITH_MIC)
+BUILD   := build/$(WITH_WIIDRC)$(WITH_WUPC)$(WITH_SICKSAXIS)$(WITH_TABLET)$(WITH_MIC)$(WITH_GCADAPTER)$(WITH_WPADQUEUE)
 OBJS    := $(patsubst source/%.c,$(BUILD)/%.o,$(SRCS))
 LIB     := lib/libinput-wii.a
 
@@ -48,7 +58,7 @@ $(LIB): $(OBJS) FORCE
 	@rm -f $@
 	$(AR) rcs $@ $(OBJS)
 
-$(BUILD)/%.o: source/%.c source/libinput_internal.h source/libinput_hidparse.h include/input_wii.h include/input_wiispeak.h include/input_usbmic.h include/input_tablet.h
+$(BUILD)/%.o: source/%.c source/libinput_internal.h source/libinput_hidparse.h source/libinput_gcad.h include/input_wii.h include/input_wiispeak.h include/input_usbmic.h include/input_tablet.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 

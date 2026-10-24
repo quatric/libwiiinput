@@ -12,7 +12,8 @@ extern "C" {
  * Buttons
  *
  * Every controller (Wii Remote, Nunchuk, Classic Controller, GameCube pad,
- * Wii U Pro Controller, Wii U GamePad, DualShock 3) and the keyboard/mouse
+ * Wii U Pro Controller, Wii U GamePad, DualShock 3, the GameCube controller
+ * adapter for Wii U) and the keyboard/mouse
  * are folded into one mask of WPAD_BUTTON_* bits (include <wiiuse/wpad.h>).
  * Two extras exist for the Nunchuk, which has no WPAD_BUTTON_* equivalent.
  * ---------------------------------------------------------------------- */
@@ -39,11 +40,12 @@ typedef enum {
 #define INPUT_INIT_NO_POINTER  (1u << 0) /* skip Wii Remote IR (buttons only) */
 #define INPUT_INIT_NO_MOUSE    (1u << 1)
 #define INPUT_INIT_NO_KEYBOARD (1u << 2)
+#define INPUT_INIT_NO_GCADAPTER (1u << 3) /* leave the Wii U GameCube adapter alone */
 
 /* Initialize everything: GameCube pads, Wii Remotes (incl. Nunchuk and
  * Classic Controller), optional Wii U Pro Controller / Wii U GamePad /
- * DualShock 3 (HAVE_WUPC, HAVE_WIIDRC, HAVE_SICKSAXIS), USB keyboard and
- * USB mouse. Calls USB_Initialize(). Returns 0 on success, negative on
+ * DualShock 3 / GameCube adapter for Wii U (HAVE_WUPC, HAVE_WIIDRC,
+ * HAVE_SICKSAXIS, HAVE_GCADAPTER), USB keyboard and USB mouse. Calls USB_Initialize(). Returns 0 on success, negative on
  * failure. Safe to call twice. */
 s32 INPUT_Init(void);
 s32 INPUT_InitEx(u32 flags);
@@ -151,6 +153,32 @@ void INPUT_GameCubeMapSet(u16 pad_buttons, u32 button);
  * them, such as SDL-wii turning channel 0's A and B into mouse buttons.
  * Expansion controllers on that channel are unaffected. 0 restores them. */
 void INPUT_IgnoreWiimoteButtons(int chan, u32 buttons);
+
+/* ---- GameCube controller adapter for Wii U (HAVE_GCADAPTER) ----
+ * Nintendo's WUP-028 and the third-party adapters that copy it, in either
+ * mode (Wii U / PC). It is looked for every two seconds, so it can be
+ * plugged in at any time; its four ports go into the button masks and
+ * sticks like the console's own GameCube ports (through the same
+ * INPUT_GameCubeMap, source "GameCube"). Sticks centre on where they rest
+ * when a controller is plugged in; X+Y+Start held for three seconds takes
+ * the centre again, as on the console. */
+typedef struct {
+    u16  buttons;                  /* PAD_BUTTON_* / PAD_TRIGGER_* */
+    s8   stick_x, stick_y;         /* from the centre, y up, about -100..100 */
+    s8   substick_x, substick_y;
+    u8   trigger_l, trigger_r;     /* 0..255 */
+    bool wireless;                 /* a WaveBird receiver: no rumble */
+} input_gc_pad;
+
+/* True while the adapter is plugged in and reporting. */
+bool INPUT_GCAdapterConnected(void);
+/* Port 0-3 as of the last INPUT_Update(); false when nothing is plugged
+ * into it. */
+bool INPUT_GCAdapterPad(int port, input_gc_pad *out);
+/* Rumble needs the adapter's power (grey) cable plugged in. */
+void INPUT_GCAdapterRumble(int port, bool on);
+/* Where the adapter's steps and errors go, e.g. INPUT_GCAdapterSetLog(printf). */
+void INPUT_GCAdapterSetLog(int (*print)(const char *fmt, ...));
 
 /* ---- Mouse ---- */
 bool INPUT_MouseConnected(void);

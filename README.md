@@ -4,7 +4,8 @@ USB keyboard and mouse input for the Nintendo Wii, built on libogc.
 
 - One call reads every controller and normalises it to `WPAD_BUTTON_*`: Wii Remote,
   Classic Controller, GameCube pad, plus optional Wii U Pro Controller (libwupc),
-  Wii U GamePad (libwiidrc) and DualShock 3 (libsicksaxis)
+  Wii U GamePad (libwiidrc), DualShock 3 (libsicksaxis) and the GameCube controller
+  adapter for Wii U (no extra library, from RiftWii)
 - Background thread keeps the keyboard connected and scanned (hot-plug safe)
 - Per-frame polling: held / pressed / released for every USB HID key
 - Optional keyboard-to-Wii-Remote mapping (`INPUT_KeyboardPadHeld/Down`)
@@ -40,6 +41,13 @@ Enable the same flags when linking your app, adding `-lwiidrc`, `-lwupc` (with
 `-Wl,-wrap,wiiuse_accept`) and `-lsicksaxis` ahead of `-lwiiuse`.
 
 Link with `-linput-wii -lwiikeyboard -logc` (and the usual `-lwiiuse -lbte -lm`).
+
+```sh
+make WITH_GCADAPTER=1   # the GameCube controller adapter for Wii U, no extra library needed
+make WITH_WPADQUEUE=1   # a fourth Wii Remote and the Balance Board without a crash
+```
+
+`WITH_WPADQUEUE=1` has to be linked with `-Wl,--wrap=wiiuse_init_cmd_queue` (see below).
 
 ### Optional drivers
 
@@ -94,6 +102,46 @@ INPUT_Shutdown();
 * `INPUT_GameCubeMapSet/Clear` do the same for the GameCube pad.
 * `INPUT_IgnoreWiimoteButtons` leaves a channel's own Wii Remote buttons to another layer.
 * `INPUT_StickRaw` gives a stick before its length is clamped, for apps with their own scaling.
+* `INPUT_GCAdapterPad/Rumble/Connected` reach the Wii U GameCube adapter's ports (`WITH_GCADAPTER`).
+
+### GameCube controller adapter for Wii U
+
+With `WITH_GCADAPTER=1`, Nintendo's WUP-028 adapter (and the third-party ones that copy it) works
+like the console's own GameCube ports: its four controllers go into `INPUT_ButtonsHeld/Down` and
+`INPUT_Stick` through the same `INPUT_GameCubeMapSet` mapping, with the source `"GameCube"`. It is
+looked for every two seconds, so it can be plugged in with the app running. `INPUT_GCAdapterPad`
+gives a port's raw state (buttons, sticks, analogue triggers, WaveBird or not),
+`INPUT_GCAdapterRumble` rumbles one (with the grey power cable plugged in),
+`INPUT_GCAdapterConnected` says whether it is reporting, and `INPUT_GCAdapterSetLog(printf)` shows
+what the driver does. Sticks centre on where they rest when a controller is plugged in; X+Y+Start
+held for three seconds takes the centre again. `INPUT_InitEx(INPUT_INIT_NO_GCADAPTER)` leaves it
+alone.
+
+The adapter is a USB HID device read through IOS's `/dev/usb/hid`. Under IOS 58 (the Homebrew
+Channel's), libogc's USB already holds that device, so the driver goes through libogc's device list
+and transfers; under a d2x cIOS (v4) it opens `/dev/usb/hid` itself. Every request is asynchronous,
+and a USB module that does not answer within 1.5 s turns the adapter off instead of hanging the app.
+`INPUT_Shutdown` gives the adapter back, so the next program can open it.
+
+The driver (`source/libinput_gcad.c`) and its libogc side (`source/libinput_gcadapter.c`) come from
+[RiftWii](https://github.com/KakarottoCake/Riftwii), which built them on wiibrew's IOS documentation,
+Dolphin's emulation and adapter code, wup-028-bslug (Alex Chadwick) and Nintendont (FIX94 and
+contributors). Those files are GPL-3.0-or-later, which combines with this library's AGPL-3.0. Not
+yet tested on real hardware as part of this library; RiftWii's own testers use it on Wiis and Wii Us.
+
+### A fourth Wii Remote and the Balance Board
+
+libogc 3.1 gives each of its six Bluetooth slots a 256-command queue from its kernel heap, which only
+has room for three. The fourth Wii Remote, or a Balance Board left on from another game, gets an
+empty queue and crashes the program as it connects. `WITH_WPADQUEUE=1` (also from RiftWii) gives the
+queues normal heap memory instead; apps link with
+
+```make
+LDFLAGS += -Wl,--wrap=wiiuse_init_cmd_queue
+```
+
+or the link fails on `__wrap_wiiuse_init_cmd_queue`. The library also sets the data format and
+pointer size on the four Wii Remote channels only, never the Balance Board's.
 
 ### Wii Speak
 
@@ -248,11 +296,14 @@ git submodule add https://github.com/quatric/libwiiinput.git libwiiinput
 SOURCES  += libwiiinput/source
 CFLAGS   += -Ilibwiiinput/include
 CFLAGS   += -DHAVE_TABLET -DHAVE_MIC     # only the drivers you use
+CFLAGS   += -DHAVE_GCADAPTER -DHAVE_WPADQUEUE
 LDFLAGS  += -Wl,--wrap=classic_ctrl_handshake,--wrap=parse_event,--wrap=USB_GetDeviceList   # with HAVE_TABLET
+LDFLAGS  += -Wl,--wrap=wiiuse_init_cmd_queue   # with HAVE_WPADQUEUE
 ```
 
 See `example/main.c` for a complete program.
 
 ## License
 
-AGPL-3.0, see `LICENSE`.
+AGPL-3.0, see `LICENSE`. The files taken from RiftWii (`libinput_gcad.*`, `libinput_gcadapter.c`,
+`libinput_wpadqueue.c`) keep their GPL-3.0-or-later notices.

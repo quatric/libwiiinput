@@ -216,6 +216,28 @@ static void poll_ds3(void)
 }
 #endif
 
+#ifdef HAVE_GCADAPTER
+/* The adapter's ports read like the console's own GameCube ports, through
+ * the same mapping; the driver gives the sticks relative to their origin. */
+static u16 gcad_previous[4];
+
+static void poll_gcadapter(void)
+{
+    inpw_gcadapter_update();
+    for (int port = 0; port < 4; port++) {
+        input_gc_pad p;
+        if (!INPUT_GCAdapterPad(port, &p)) {
+            gcad_previous[port] = 0;
+            continue;
+        }
+        feed("GameCube", map_gc(p.buttons), map_gc(p.buttons & ~gcad_previous[port]));
+        gcad_previous[port] = p.buttons;
+        stick_feed(INPUT_STICK_LEFT, "GameCube", p.stick_x / 70.0f, p.stick_y / 70.0f);
+        stick_feed(INPUT_STICK_RIGHT, "GameCube", p.substick_x / 60.0f, p.substick_y / 60.0f);
+    }
+}
+#endif
+
 /* libogc's wiiuse maps the camera's 1024x768 view to the screen through a box sized for a 4:3
  * screen (560x420) unless told otherwise, and libogc never tells it the console's 16:9 setting.
  * On a widescreen TV the screen spans more of the camera's view, so the pointer ran ahead of the
@@ -242,10 +264,15 @@ s32 inpw_pads_init(u32 flags)
 #ifdef HAVE_WUPC
     WUPC_Init();
 #endif
+#ifdef HAVE_WPADQUEUE
+    inpw_wpadqueue_link();
+#endif
     WPAD_Init();
-    WPAD_SetDataFormat(WPAD_CHAN_ALL,
-                       (flags & INPUT_INIT_NO_POINTER) ? WPAD_FMT_BTNS : WPAD_FMT_BTNS_ACC_IR);
-    WPAD_SetVRes(WPAD_CHAN_ALL, inpw_screen_w, inpw_screen_h);
+    /* The four Wii Remote channels only: the Balance Board's is never read. */
+    for (int ch = WPAD_CHAN_0; ch <= WPAD_CHAN_3; ch++) {
+        WPAD_SetDataFormat(ch, (flags & INPUT_INIT_NO_POINTER) ? WPAD_FMT_BTNS : WPAD_FMT_BTNS_ACC_IR);
+        WPAD_SetVRes(ch, inpw_screen_w, inpw_screen_h);
+    }
     widescreen = CONF_GetAspectRatio() == CONF_ASPECT_16_9;
 #ifdef HAVE_WIIDRC
     WiiDRC_Init();
@@ -257,11 +284,17 @@ s32 inpw_pads_init(u32 flags)
             ss_start_reading(&ds3);
     }
 #endif
+#ifdef HAVE_GCADAPTER
+    inpw_gcadapter_init(!(flags & INPUT_INIT_NO_GCADAPTER));
+#endif
     return 0;
 }
 
 void inpw_pads_shutdown(void)
 {
+#ifdef HAVE_GCADAPTER
+    inpw_gcadapter_shutdown();
+#endif
 #ifdef HAVE_SICKSAXIS
     if (ds3_initialized) {
         if (ss_is_connected(&ds3))
@@ -278,7 +311,8 @@ void inpw_pads_shutdown(void)
 
 void inpw_pads_set_screen(int w, int h)
 {
-    WPAD_SetVRes(WPAD_CHAN_ALL, w, h);
+    for (int ch = WPAD_CHAN_0; ch <= WPAD_CHAN_3; ch++)
+        WPAD_SetVRes(ch, w, h);
 }
 
 void inpw_pads_update(void)
@@ -369,6 +403,10 @@ void inpw_pads_update(void)
         stick_feed(INPUT_STICK_LEFT, "GameCube", PAD_StickX(ch) / 70.0f, PAD_StickY(ch) / 70.0f);
         stick_feed(INPUT_STICK_RIGHT, "GameCube", PAD_SubStickX(ch) / 60.0f, PAD_SubStickY(ch) / 60.0f);
     }
+
+#ifdef HAVE_GCADAPTER
+    poll_gcadapter();
+#endif
 
     for (int i = 0; i < 2; i++) {
         if (sticks[i].mag > STICK_ACTIVE)
