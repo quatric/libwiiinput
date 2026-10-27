@@ -246,16 +246,32 @@ static void poll_gcadapter(void)
  * half height less 70, up for a bar above the screen, down for one below). */
 static bool widescreen;
 
+/* wiiuse drops the pointer the moment the sensor bar leaves its box, so with the bar above the
+ * TV (where the camera sees it least when aiming low) the pointer vanished short of the bottom
+ * of the screen. Here a position a little past the box is held at the edge instead, the more so
+ * below it, and only further out is the pointer lost. */
+static bool point_box(const ir_t *ir, float xs, float ys, float bar_y, float *x, float *y)
+{
+    const float offset_y = ir->pos == WIIUSE_IR_ABOVE ? ys / 2 - bar_y : -ys / 2 + bar_y;
+    const float x0 = (1024 - xs) / 2, y0 = (768 - ys) / 2 + offset_y;
+    if (!ir->smooth_valid)
+        return false;
+    const float u = (ir->sx - x0) / xs, v = (ir->sy - y0) / ys;
+    if (u < -0.15f || u > 1.15f || v < -0.15f || v > 1.4f)
+        return false;
+    *x = (u < 0 ? 0 : (u > 1 ? 1 : u)) * inpw_screen_w;
+    *y = (v < 0 ? 0 : (v > 1 ? 1 : v)) * inpw_screen_h;
+    return true;
+}
+
 static bool point_16_9(const ir_t *ir, float *x, float *y)
 {
-    const float xs = 660.0f, ys = 370.0f;
-    const float offset_y = ir->pos == WIIUSE_IR_ABOVE ? ys / 2 - 70 : -ys / 2 + 70;
-    const float x0 = (1024 - xs) / 2, y0 = (768 - ys) / 2 + offset_y;
-    if (!ir->smooth_valid || ir->sx < x0 || ir->sx > x0 + xs || ir->sy < y0 || ir->sy > y0 + ys)
-        return false;
-    *x = (ir->sx - x0) / xs * inpw_screen_w;
-    *y = (ir->sy - y0) / ys * inpw_screen_h;
-    return true;
+    return point_box(ir, 660.0f, 370.0f, 70.0f, x, y);
+}
+
+static bool point_4_3(const ir_t *ir, float *x, float *y)
+{
+    return point_box(ir, 560.0f, 420.0f, 100.0f, x, y);
 }
 
 s32 inpw_pads_init(u32 flags)
@@ -372,10 +388,10 @@ void inpw_pads_update(void)
 
         if (!pointer_valid) {
             float x, y;
-            if (widescreen ? point_16_9(&wd->ir, &x, &y) : wd->ir.valid) {
+            if (widescreen ? point_16_9(&wd->ir, &x, &y) : point_4_3(&wd->ir, &x, &y)) {
                 pointer_valid = true;
-                pointer_x = widescreen ? x : wd->ir.x;
-                pointer_y = widescreen ? y : wd->ir.y;
+                pointer_x = x;
+                pointer_y = y;
             }
         }
 
