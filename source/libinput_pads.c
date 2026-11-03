@@ -238,6 +238,27 @@ static void poll_gcadapter(void)
 }
 #endif
 
+#ifdef HAVE_HIDPADS
+/* USB pads with a Nintendont layout, through the same GameCube mapping.
+ * Their sticks are scaled like Nintendont's, to a GameCube pad's range. */
+static u16 hid_previous[4];
+
+static void poll_hidpads(void)
+{
+    for (int port = 0; port < 4; port++) {
+        input_gc_pad p;
+        if (!INPUT_HIDPadPad(port, &p)) {
+            hid_previous[port] = 0;
+            continue;
+        }
+        feed("USB Pad", map_gc(p.buttons), map_gc(p.buttons & ~hid_previous[port]));
+        hid_previous[port] = p.buttons;
+        stick_feed(INPUT_STICK_LEFT, "USB Pad", p.stick_x / 70.0f, p.stick_y / 70.0f);
+        stick_feed(INPUT_STICK_RIGHT, "USB Pad", p.substick_x / 60.0f, p.substick_y / 60.0f);
+    }
+}
+#endif
+
 /* libogc's wiiuse maps the camera's 1024x768 view to the screen through a box sized for a 4:3
  * screen (560x420) unless told otherwise, and libogc never tells it the console's 16:9 setting.
  * On a widescreen TV the screen spans more of the camera's view, so the pointer ran ahead of the
@@ -303,11 +324,17 @@ s32 inpw_pads_init(u32 flags)
 #ifdef HAVE_GCADAPTER
     inpw_gcadapter_init(!(flags & INPUT_INIT_NO_GCADAPTER));
 #endif
+#ifdef HAVE_HIDPADS
+    inpw_hidpads_init(!(flags & INPUT_INIT_NO_HIDPADS));
+#endif
     return 0;
 }
 
 void inpw_pads_shutdown(void)
 {
+#ifdef HAVE_HIDPADS
+    inpw_hidpads_shutdown();
+#endif
 #ifdef HAVE_GCADAPTER
     inpw_gcadapter_shutdown();
 #endif
@@ -422,6 +449,9 @@ void inpw_pads_update(void)
 
 #ifdef HAVE_GCADAPTER
     poll_gcadapter();
+#endif
+#ifdef HAVE_HIDPADS
+    poll_hidpads();
 #endif
 
     for (int i = 0; i < 2; i++) {

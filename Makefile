@@ -16,6 +16,7 @@ WITH_TABLET    ?= 0
 WITH_MIC       ?= 0
 WITH_GCADAPTER ?= 0
 WITH_WPADQUEUE ?= 0
+WITH_HIDPADS   ?= 0
 PORTLIBS       ?= $(CURDIR)/portlibs/ppc
 CFLAGS += -I$(PORTLIBS)/include
 ifeq ($(WITH_WIIDRC),1)
@@ -39,6 +40,10 @@ endif
 ifeq ($(WITH_GCADAPTER),1)
  CFLAGS += -DHAVE_GCADAPTER
 endif
+# USB game controllers with Nintendont's controller.ini layouts
+ifeq ($(WITH_HIDPADS),1)
+ CFLAGS += -DHAVE_HIDPADS
+endif
 # Room for a fourth Wii Remote and the Balance Board (links with --wrap=wiiuse_init_cmd_queue)
 ifeq ($(WITH_WPADQUEUE),1)
  CFLAGS += -DHAVE_WPADQUEUE
@@ -46,7 +51,7 @@ endif
 
 SRCS    := $(wildcard source/*.c)
 # one folder of objects for each set of options, so switching them rebuilds
-BUILD   := build/$(WITH_WIIDRC)$(WITH_WUPC)$(WITH_SICKSAXIS)$(WITH_TABLET)$(WITH_MIC)$(WITH_GCADAPTER)$(WITH_WPADQUEUE)
+BUILD   := build/$(WITH_WIIDRC)$(WITH_WUPC)$(WITH_SICKSAXIS)$(WITH_TABLET)$(WITH_MIC)$(WITH_GCADAPTER)$(WITH_WPADQUEUE)$(WITH_HIDPADS)
 OBJS    := $(patsubst source/%.c,$(BUILD)/%.o,$(SRCS))
 LIB     := lib/libinput-wii.a
 
@@ -58,7 +63,7 @@ $(LIB): $(OBJS) FORCE
 	@rm -f $@
 	$(AR) rcs $@ $(OBJS)
 
-$(BUILD)/%.o: source/%.c source/libinput_internal.h source/libinput_hidparse.h source/libinput_gcad.h include/input_wii.h include/input_wiispeak.h include/input_usbmic.h include/input_tablet.h
+$(BUILD)/%.o: source/%.c source/libinput_internal.h source/libinput_hidparse.h source/libinput_gcad.h source/libinput_hid.h include/input_wii.h include/input_wiispeak.h include/input_usbmic.h include/input_tablet.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -70,7 +75,12 @@ install: $(LIB)
 clean:
 	rm -rf build lib
 
+# host test of the controller.ini reader (no devkitPro needed)
+test:
+	cc -DHAVE_HIDPADS -Wall -Wextra -fsanitize=address,undefined -Isource tests/hid_test.c source/libinput_hid.c source/libinput_hidpads_data.c -o build/hid_test
+	build/hid_test
+
 controllers:
 	./scripts/build_controller_portlibs.sh
 
-.PHONY: all install clean controllers FORCE
+.PHONY: all install clean controllers test FORCE

@@ -719,6 +719,11 @@ static s32 open_tablet(void)
 		if ((vid == 0 && pid == 0) || (vid == 0x057E && pid == 0x0308) ||
 		    listed(tb_others, tb_nothers, vid, pid))
 			continue;
+#ifdef HAVE_HIDPADS
+		/* A game controller with a layout is read by its own driver. */
+		if (inpw_hidpads_claims(vid, pid))
+			continue;
+#endif
 
 		tb_unplugged = false;
 		/* Once per new device list: the scan repeats every second. */

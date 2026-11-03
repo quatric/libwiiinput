@@ -41,6 +41,7 @@ typedef enum {
 #define INPUT_INIT_NO_MOUSE    (1u << 1)
 #define INPUT_INIT_NO_KEYBOARD (1u << 2)
 #define INPUT_INIT_NO_GCADAPTER (1u << 3) /* leave the Wii U GameCube adapter alone */
+#define INPUT_INIT_NO_HIDPADS  (1u << 4) /* leave the USB game controllers alone */
 
 /* Initialize everything: GameCube pads, Wii Remotes (incl. Nunchuk and
  * Classic Controller), optional Wii U Pro Controller / Wii U GamePad /
@@ -179,6 +180,35 @@ bool INPUT_GCAdapterPad(int port, input_gc_pad *out);
 void INPUT_GCAdapterRumble(int port, bool on);
 /* Where the adapter's steps and errors go, e.g. INPUT_GCAdapterSetLog(printf). */
 void INPUT_GCAdapterSetLog(int (*print)(const char *fmt, ...));
+
+/* ---- USB game controllers with a Nintendont layout (HAVE_HIDPADS) ----
+ *
+ * The USB pads Nintendont reads through its controller.ini files: about
+ * forty built in (Logitech, Mayflash, 8BitDo, PlayStation 4 and 5, Switch
+ * and Shield pads, Hori, PDP, Thrustmaster and more), and any other whose
+ * layout is given as a file named sd:/controllers/VVVV_PPPP.ini, as
+ * sd:/controller.ini, or to INPUT_HIDPadAddConfig. Up to four are read at
+ * once, hot-plug safe, and fold into INPUT_ButtonsHeld/Down and
+ * INPUT_Stick through INPUT_GameCubeMapSet, with the source "USB Pad".
+ * Only a device with a layout is opened. The PlayStation 3's pad, which
+ * Nintendont polls with GET_REPORT, is left to libsicksaxis. */
+/* True while any is plugged in and reporting. */
+bool INPUT_HIDPadConnected(void);
+/* Pad 0-3 (in plug-in order) as of now; false when nothing is in that
+ * slot. Sticks are from the centre like the GameCube pad's. */
+bool INPUT_HIDPadPad(int port, input_gc_pad *out);
+/* The layout a pad is read with (a built-in one is named after the
+ * pad), or NULL. Valid until the next call. */
+const char *INPUT_HIDPadName(int port);
+/* Rumbles a pad whose layout has a motor. A report must arrive between
+ * a change and its effect, so a pad that only reports on change waits
+ * for the next press. */
+void INPUT_HIDPadRumble(int port, bool on);
+/* Adds a controller.ini the app carries itself (Nintendont's format),
+ * ahead of the files and the built-in layouts. False when it is refused. */
+bool INPUT_HIDPadAddConfig(const char *text, size_t length);
+/* Where the pads' steps and errors go, e.g. INPUT_HIDPadSetLog(printf). */
+void INPUT_HIDPadSetLog(int (*print)(const char *fmt, ...));
 
 /* ---- Mouse ---- */
 bool INPUT_MouseConnected(void);

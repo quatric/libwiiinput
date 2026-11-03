@@ -6,6 +6,8 @@ USB keyboard and mouse input for the Nintendo Wii, built on libogc.
   Classic Controller, GameCube pad, plus optional Wii U Pro Controller (libwupc),
   Wii U GamePad (libwiidrc), DualShock 3 (libsicksaxis) and the GameCube controller
   adapter for Wii U (no extra library, from RiftWii)
+- USB game controllers with Nintendont's controller.ini layouts (`WITH_HIDPADS=1`): forty built in,
+  more from files or the app, up to four at once (from RiftWii)
 - Background thread keeps the keyboard connected and scanned (hot-plug safe)
 - Per-frame polling: held / pressed / released for every USB HID key
 - Optional keyboard-to-Wii-Remote mapping (`INPUT_KeyboardPadHeld/Down`)
@@ -45,6 +47,7 @@ Link with `-linput-wii -lwiikeyboard -logc` (and the usual `-lwiiuse -lbte -lm`)
 ```sh
 make WITH_GCADAPTER=1   # the GameCube controller adapter for Wii U, no extra library needed
 make WITH_WPADQUEUE=1   # a fourth Wii Remote and the Balance Board without a crash
+make WITH_HIDPADS=1     # USB game controllers with Nintendont's layouts, no extra library needed
 ```
 
 `WITH_WPADQUEUE=1` has to be linked with `-Wl,--wrap=wiiuse_init_cmd_queue` (see below).
@@ -128,6 +131,36 @@ The driver (`source/libinput_gcad.c`) and its libogc side (`source/libinput_gcad
 Dolphin's emulation and adapter code, wup-028-bslug (Alex Chadwick) and Nintendont (FIX94 and
 contributors). Those files are GPL-3.0-or-later, which combines with this library's AGPL-3.0. Not
 yet tested on real hardware as part of this library; RiftWii's own testers use it on Wiis and Wii Us.
+
+### USB game controllers (Nintendont's layouts)
+
+With `WITH_HIDPADS=1`, the USB pads Nintendont reads through its `controller.ini` files work like the
+console's own GameCube ports: up to four at once, plugged in at any time, folded into
+`INPUT_ButtonsHeld/Down` and `INPUT_Stick` through the same `INPUT_GameCubeMapSet` mapping, with the
+source `"USB Pad"`. `INPUT_HIDPadPad` gives a slot's raw state (buttons, sticks, analogue triggers),
+`INPUT_HIDPadRumble` rumbles a pad whose layout has a motor, `INPUT_HIDPadName` says which layout it
+is read with, `INPUT_HIDPadConnected` whether any is reporting and `INPUT_HIDPadSetLog(printf)` shows
+what the driver does. `INPUT_InitEx(INPUT_INIT_NO_HIDPADS)` leaves them alone.
+
+A pad is known by its USB vendor and product id. The library carries Nintendont's own collection of
+layouts: the Logitech F310 and RumblePad 2, PlayStation 2, 4 and 5 pads, the 8BitDo NES30 and SNES30
+Pro, Nvidia Shield, Switch, PDP, PowerA and Qanba pads, the Mayflash Wii U Pro and Classic Controller
+adapters and other cheap generic pads, Thrustmaster and Saitek, and more (see
+`source/libinput_hidpads_data.c`, made by `scripts/make_hidpad_data.py`). For any other pad, a layout
+in Nintendont's format is looked for, first among those given to `INPUT_HIDPadAddConfig(text, length)`,
+then at `sd:/controllers/VVVV_PPPP.ini` (the ids in hex) and `sd:/controller.ini`, which needs the app
+to have mounted the card. Only a device with a layout is ever opened, so the keyboard, mouse and
+tablet scans are left alone. Layouts that Nintendont reads with GET_REPORT (the PlayStation 3's pad,
+which libsicksaxis handles, and a Hori fight stick) and the ones whose reports carry several pads (`MultiIn` 2 to 4) are not
+read.
+
+The pad's interrupt endpoint is read through libogc's USB, one asynchronous read per pad, on a
+background thread. Rumble goes out between reads, so a pad that only reports when something changes
+rumbles on its next report. The layouts and the report conversion come from RiftWii
+(`runtime/rthid.c`, `src/data/hidconfig.cpp`), which wrote them from Nintendont's HID.c and
+PADReadGC.c; this file's USB handling follows the tablet driver here and RiftWii's own. Not yet tested
+on real hardware as part of this library. `make test` checks the reader and the conversion on the
+computer, against every built-in layout.
 
 ### A fourth Wii Remote and the Balance Board
 
@@ -306,4 +339,6 @@ See `example/main.c` for a complete program.
 ## License
 
 AGPL-3.0, see `LICENSE`. The files taken from RiftWii (`libinput_gcad.*`, `libinput_gcadapter.c`,
-`libinput_wpadqueue.c`) keep their GPL-3.0-or-later notices.
+`libinput_wpadqueue.c`, `libinput_hid*.{c,h}`) keep their GPL-3.0-or-later notices. The controller
+layouts in `libinput_hidpads_data.c` are Nintendont's (FIX94 and contributors,
+<https://github.com/FIX94/Nintendont>), used with its developers' permission.

@@ -32,6 +32,13 @@ void inpw_gcadapter_shutdown(void);
 void inpw_gcadapter_update(void);
 #endif
 
+#ifdef HAVE_HIDPADS
+void inpw_hidpads_init(bool enabled);
+void inpw_hidpads_shutdown(void);
+/* a pad with a layout, which the tablet scan leaves unopened */
+bool inpw_hidpads_claims(u16 vid, u16 pid);
+#endif
+
 #ifdef HAVE_TABLET
 #include "input_tablet.h"
 /* the uDraw, for the TB_* calls in libinput_tablet.c */
