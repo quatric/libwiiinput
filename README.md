@@ -197,13 +197,14 @@ if (WS_Open(firmware, firmware_size) == WS_OK) {
 The Wii Speak (`057e:0308`) is not a USB audio class device. The driver reimplements the RVL SDK's
 `PMIC` library over `/dev/usb/oh0`, and was taken from RecordMii. The mic has no firmware of its own:
 `WS_Open` uploads the 97,480-byte `PMIC_FIRM_DATA` blob, which is Nintendo's and is **not** included.
-Apps have to get it from the user (RecordMii's `tools/extract_pmic_firmware.py` pulls it out of an
-RVL SDK `pmic.a`). It can be built into the library: `make firmware SDK=/path/to/RVL_SDK/RVL/lib/pmic.a` extracts it
-to `data/pmic_firm.bin` (ignored by git; copying the file there works too), or pass `PMIC_FIRM=<file>`
-to `make WITH_MIC=1`, and `WS_BuiltinFirmware(&size)` returns it (`NULL` when the
-library was built without it; `PMIC_FIRM=none` leaves it out). Apps that compile `source/` themselves
-define `WS_FIRMWARE_FILE` as the file's path in quotes. Don't publish binaries built this way. Dolphin's emulated Wii Speak accepts any non-empty blob and records from the host
-microphone. Not yet tested on real hardware.
+Get it from your own RVL SDK
+`pmic.a`: `make firmware SDK=/path/to/RVL_SDK/RVL/lib/pmic.a` runs `tools/extract_pmic_firmware.py` and
+writes `data/pmic_firm.bin` (ignored by git; copying the file there works too). With that file there,
+`make WITH_MIC=1` builds it into the library (or pass `PMIC_FIRM=<file>`; `PMIC_FIRM=none` leaves it
+out), and `WS_BuiltinFirmware(&size)` returns it, or `NULL` when the library was built without it.
+Apps that compile `source/` themselves define `WS_FIRMWARE_FILE` as the file's path in quotes. Don't
+publish binaries built with it. Dolphin's emulated Wii Speak accepts any non-empty blob and records from the host
+microphone. Tested on a real Wii Speak with RecordMii.
 
 ### USB microphones
 
