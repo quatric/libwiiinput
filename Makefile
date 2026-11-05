@@ -88,6 +88,15 @@ install: $(LIB)
 clean:
 	rm -rf build lib
 
+# Extracts the Wii Speak firmware from an RVL SDK pmic.a into data/pmic_firm.bin,
+# which the library then builds in (WITH_MIC=1).  The file is Nintendo's and
+# ignored by git; apps that use this library take it from here.
+SDK ?=
+firmware:
+	@if [ -z "$(SDK)" ]; then echo "make firmware SDK=/path/to/RVL_SDK/RVL/lib/pmic.a"; exit 1; fi
+	@mkdir -p data
+	python3 tools/extract_pmic_firmware.py "$(SDK)" -o data/pmic_firm.bin
+
 # host test of the controller.ini reader (no devkitPro needed)
 test:
 	cc -DHAVE_HIDPADS -Wall -Wextra -fsanitize=address,undefined -Isource tests/hid_test.c source/libinput_hid.c source/libinput_hidpads_data.c -o build/hid_test
@@ -96,4 +105,4 @@ test:
 controllers:
 	./scripts/build_controller_portlibs.sh
 
-.PHONY: all install clean controllers test FORCE
+.PHONY: all install clean controllers test firmware FORCE
