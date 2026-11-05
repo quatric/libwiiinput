@@ -51,6 +51,11 @@ void WS_SetCancel(bool (*cancel)(void));
  * SDK's pmic.a -- see tools/extract_pmic_firmware.py).  The mic ignores every
  * other request until this has completed. */
 s32 WS_Open(const void *firmware, u32 firmware_size);
+
+/* The boot firmware built into the library (make PMIC_FIRM=<file>, or
+ * data/pmic_firm.bin present at build time), for WS_Open().  NULL, with
+ * *size 0, when the library was built without one. */
+const u8 *WS_BuiltinFirmware(u32 *size);
 s32 WS_Close(void);
 
 /* Reports (through WS_SetLog) the IOS version, which USB interfaces IOS is offering, and every

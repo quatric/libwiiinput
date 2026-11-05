@@ -35,6 +35,16 @@ endif
 # Wii Speak and USB microphones (input_wiispeak.h, input_usbmic.h)
 ifeq ($(WITH_MIC),1)
  CFLAGS += -DHAVE_MIC
+# The Wii Speak's boot firmware (Nintendo's, never in the repository), built in
+# when given: WS_BuiltinFirmware() then returns it.  PMIC_FIRM=none leaves it out.
+ PMIC_FIRM ?= $(wildcard $(CURDIR)/data/pmic_firm.bin)
+ ifneq ($(filter-out none,$(strip $(PMIC_FIRM))),)
+  ifeq ($(wildcard $(PMIC_FIRM)),)
+   $(error PMIC_FIRM=$(PMIC_FIRM) does not exist)
+  endif
+  FIRM_FILE := $(abspath $(PMIC_FIRM))
+  CFLAGS += -DWS_FIRMWARE_FILE='"$(FIRM_FILE)"'
+ endif
 endif
 # The GameCube controller adapter for Wii U
 ifeq ($(WITH_GCADAPTER),1)
@@ -51,7 +61,7 @@ endif
 
 SRCS    := $(wildcard source/*.c)
 # one folder of objects for each set of options, so switching them rebuilds
-BUILD   := build/$(WITH_WIIDRC)$(WITH_WUPC)$(WITH_SICKSAXIS)$(WITH_TABLET)$(WITH_MIC)$(WITH_GCADAPTER)$(WITH_WPADQUEUE)$(WITH_HIDPADS)
+BUILD   := build/$(WITH_WIIDRC)$(WITH_WUPC)$(WITH_SICKSAXIS)$(WITH_TABLET)$(WITH_MIC)$(WITH_GCADAPTER)$(WITH_WPADQUEUE)$(WITH_HIDPADS)$(if $(FIRM_FILE),f)
 OBJS    := $(patsubst source/%.c,$(BUILD)/%.o,$(SRCS))
 LIB     := lib/libinput-wii.a
 
@@ -66,6 +76,9 @@ $(LIB): $(OBJS) FORCE
 $(BUILD)/%.o: source/%.c source/libinput_internal.h source/libinput_hidparse.h source/libinput_gcad.h source/libinput_hid.h include/input_wii.h include/input_wiispeak.h include/input_usbmic.h include/input_tablet.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# rebuilt when the firmware file changes
+$(BUILD)/libinput_wiispeak_firm.o: $(FIRM_FILE)
 
 install: $(LIB)
 	@mkdir -p $(DESTDIR)$(DEVKITPRO)/portlibs/ppc/lib $(DESTDIR)$(DEVKITPRO)/portlibs/ppc/include

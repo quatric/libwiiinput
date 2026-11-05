@@ -4,3 +4,4 @@ lib/
 *.elf
 *.dol
 portlibs/
+data/pmic_firm.bin
