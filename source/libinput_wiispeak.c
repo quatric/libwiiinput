@@ -2,6 +2,7 @@
 
 #ifdef HAVE_MIC
 
+#include <ogc/ipc.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
@@ -69,7 +70,8 @@
 
 #define ISO_IN_PACKETS   8
 #define ISO_IN_PKTSIZE   32
-#define ISO_IN_BYTES     (ISO_IN_PACKETS * ISO_IN_PKTSIZE)
+#define ISO_IN_BYTES     (ISO_IN_MAXPKTS * ISO_IN_PKTSIZE)
+#define ISO_IN_MAXPKTS   16
 
 #define ISO_OUT_PACKETS  8
 #define ISO_OUT_PKTSIZE  64
@@ -150,6 +152,11 @@ static ws_xfer ws_in_x[ISO_SLOTS], ws_out_x[ISO_SLOTS];
 /* Experiment knobs, see WS_SetStreams(). */
 static int ws_in_slots = ISO_SLOTS;
 static bool ws_out_on = true;
+static bool ws_cb_mode; /* resubmit transfers from the completion callback */
+static int ws_in_pkts = ISO_IN_PACKETS; /* packets per IN transfer, 1..16 */
+static int ws_boot_wait_ms = 300;
+static bool ws_skip_reset;
+static int ws_out_signal; /* 0 silence, 1 = 1 kHz tone at 32 kHz */
 
 u32 WS_FreqToHz(u16 freq)
 {
@@ -360,11 +367,15 @@ static s32 ws_upload_firmware(const u8 *firmware, u32 size)
 	u32 sent = 0;
 	s32 ret;
 
-	ws_log("  reset...\n");
-	ret = ws_ctrl(REQTYPE_VENDOR_OUT, REQ_RESET, 0, 0, 0, NULL, 500);
-	ws_log("  reset: %d\n", (int)ret);
-	if (ret < 0 && ret != WS_ETIMEOUT)
-		return ret;
+	if (ws_skip_reset) {
+		ws_log("  reset skipped\n");
+	} else {
+		ws_log("  reset...\n");
+		ret = ws_ctrl(REQTYPE_VENDOR_OUT, REQ_RESET, 0, 0, 0, NULL, 500);
+		ws_log("  reset: %d\n", (int)ret);
+		if (ret < 0 && ret != WS_ETIMEOUT)
+			return ret;
+	}
 
 	/* The status byte is advisory here, not a gate.
 	 *
@@ -397,7 +408,8 @@ static s32 ws_upload_firmware(const u8 *firmware, u32 size)
 
 	/* Give the mic time to bring the firmware up before anything talks to
 	 * it, since we cannot read the ready flag to find out. */
-	usleep(300 * 1000);
+	ws_log("  waiting %d ms for the firmware\n", ws_boot_wait_ms);
+	usleep(ws_boot_wait_ms * 1000);
 	(void)ws_wait_status(1, "status after upload");
 
 	/* The SDK starts the isochronous streams as soon as the mic reports
@@ -434,6 +446,137 @@ static s32 ws_upload_firmware(const u8 *firmware, u32 size)
 
 	/* Carry on regardless, so the debug console can still poke at it. */
 	return WS_OK;
+}
+
+/* ---- callback-resubmit mode (experiment) -----------------------------------
+ *
+ * The SDK queues the next transfer from inside the previous one's completion
+ * callback.  Here the callback copies the finished transfer into a small
+ * staging ring and resubmits at once; the worker thread drains the ring. */
+static u32 ws_extract(s32 ret, const u8 *src, const u16 *sizes, s16 *out);
+static void ws_push(const s16 *samples, u32 count);
+
+#define STAGE_N 32
+
+typedef struct {
+	s32 ret;
+	u16 sizes[ISO_IN_MAXPKTS];
+	u8 data[ISO_IN_BYTES];
+} ws_stage_rec;
+
+static ws_stage_rec ws_stage[STAGE_N];
+static volatile u32 ws_stage_wr, ws_stage_rd;
+
+static s32 ws_in_cb(s32 result, void *arg)
+{
+	int slot = (int)(u32)arg;
+	ws_stage_rec *r;
+	u32 i;
+
+	if (!ws_running)
+		return 0;
+
+	DCInvalidateRange(ws_in_buf[slot], ISO_IN_BYTES);
+	DCInvalidateRange(ws_in_sizes[slot], 32);
+
+	if (ws_stage_wr - ws_stage_rd >= STAGE_N)
+		ws_stage_rd++;
+	r = &ws_stage[ws_stage_wr % STAGE_N];
+	r->ret = result;
+	for (i = 0; i < ISO_IN_MAXPKTS; i++)
+		r->sizes[i] = ws_in_sizes[slot][i];
+	memcpy(r->data, ws_in_buf[slot], ISO_IN_BYTES);
+	ws_stage_wr++;
+
+	for (i = 0; i < (u32)ws_in_pkts; i++)
+		ws_in_sizes[slot][i] = ISO_IN_PKTSIZE;
+	memset(ws_in_buf[slot], ISO_POISON, ISO_IN_BYTES);
+	DCFlushRange(ws_in_buf[slot], ISO_IN_BYTES);
+	DCFlushRange(ws_in_sizes[slot], 32);
+	if (USB_ReadIsoMsgAsync(ws_fd, EP_AUDIO_IN, ws_in_pkts, ws_in_sizes[slot],
+	                        ws_in_buf[slot], ws_in_cb, arg) < 0)
+		ws_st.in_errors++;
+	return 0;
+}
+
+static s32 ws_out_cb(s32 result, void *arg)
+{
+	int slot = (int)(u32)arg;
+	u32 i;
+
+	(void)result;
+	if (!ws_running)
+		return 0;
+
+	for (i = 0; i < ISO_OUT_PACKETS; i++)
+		ws_out_sizes[slot][i] = ISO_OUT_PKTSIZE;
+	DCFlushRange(ws_out_sizes[slot], 32);
+	ws_st.out_calls++;
+	if (USB_WriteIsoMsgAsync(ws_fd, EP_AUDIO_OUT, ISO_OUT_PACKETS,
+	                         ws_out_sizes[slot], ws_out_buf[slot],
+	                         ws_out_cb, arg) < 0)
+		ws_st.out_errors++;
+	return 0;
+}
+
+static void *ws_in_worker_cb(void *arg)
+{
+	static s16 samples[ISO_IN_BYTES / sizeof(s16)];
+	int slot;
+
+	(void)arg;
+	ws_stage_wr = ws_stage_rd = 0;
+
+	/* Same order as the SDK: IN, IN, OUT, OUT. */
+	for (slot = 0; slot < ws_in_slots; slot++) {
+		u32 i;
+
+		for (i = 0; i < (u32)ws_in_pkts; i++)
+			ws_in_sizes[slot][i] = ISO_IN_PKTSIZE;
+		memset(ws_in_buf[slot], ISO_POISON, ISO_IN_BYTES);
+		DCFlushRange(ws_in_buf[slot], ISO_IN_BYTES);
+		DCFlushRange(ws_in_sizes[slot], 32);
+		if (USB_ReadIsoMsgAsync(ws_fd, EP_AUDIO_IN, ws_in_pkts,
+		                        ws_in_sizes[slot], ws_in_buf[slot],
+		                        ws_in_cb, (void *)(u32)slot) < 0)
+			ws_st.in_errors++;
+	}
+	if (ws_out_on) {
+		for (slot = 0; slot < ISO_SLOTS; slot++) {
+			u32 i;
+
+			for (i = 0; i < ISO_OUT_PACKETS; i++)
+				ws_out_sizes[slot][i] = ISO_OUT_PKTSIZE;
+			DCFlushRange(ws_out_sizes[slot], 32);
+			if (USB_WriteIsoMsgAsync(ws_fd, EP_AUDIO_OUT, ISO_OUT_PACKETS,
+			                         ws_out_sizes[slot], ws_out_buf[slot],
+			                         ws_out_cb, (void *)(u32)slot) < 0)
+				ws_st.out_errors++;
+		}
+	}
+
+	while (ws_running) {
+		ws_stage_rec *r;
+		u32 n;
+
+		if (ws_stage_rd == ws_stage_wr) {
+			usleep(1000);
+			continue;
+		}
+		r = &ws_stage[ws_stage_rd % STAGE_N];
+		ws_st.in_calls++;
+		ws_st.last_in_ret = r->ret;
+		if (r->ret < 0) {
+			ws_st.in_errors++;
+		} else {
+			n = ws_extract(r->ret, r->data, r->sizes, samples);
+			ws_st.in_samples += n;
+			if (n > 0)
+				ws_push(samples, n);
+		}
+		ws_stage_rd++;
+	}
+	return NULL;
 }
 
 /* ---- transfer threads ---------------------------------------------------- */
@@ -497,7 +640,7 @@ static u32 ws_extract(s32 ret, const u8 *src, const u16 *sizes, s16 *out)
 	int layout = ws_layout;
 	u32 i;
 
-	for (i = 0; i < ISO_IN_PACKETS; i++) {
+	for (i = 0; i < (u32)ws_in_pkts; i++) {
 		sum += sizes[i];
 		if (sizes[i] != ISO_IN_PKTSIZE)
 			rewritten = true;
@@ -515,7 +658,7 @@ static u32 ws_extract(s32 ret, const u8 *src, const u16 *sizes, s16 *out)
 		return 0;
 
 	if (layout == WS_LAYOUT_SLOTS) {
-		for (i = 0; i < ISO_IN_PACKETS; i++) {
+		for (i = 0; i < (u32)ws_in_pkts; i++) {
 			const u8 *pkt = src + i * ISO_IN_PKTSIZE;
 			u32 n = sizes[i];
 			u32 j;
@@ -534,7 +677,7 @@ static u32 ws_extract(s32 ret, const u8 *src, const u16 *sizes, s16 *out)
 		}
 	} else {
 		bytes = (ret > 0 && (u32)ret <= ISO_IN_BYTES) ? (u32)ret
-		      : (sum <= ISO_IN_BYTES ? sum : ISO_IN_BYTES);
+		      : (sum <= ISO_IN_BYTES ? sum : (u32)(ws_in_pkts * ISO_IN_PKTSIZE));
 		if (ret <= 0)
 			bytes = 0;
 		memcpy(dst, src, bytes);
@@ -565,7 +708,7 @@ static s32 ws_in_submit(int slot)
 	s32 ret;
 	u32 i;
 
-	for (i = 0; i < ISO_IN_PACKETS; i++)
+	for (i = 0; i < (u32)ws_in_pkts; i++)
 		ws_in_sizes[slot][i] = ISO_IN_PKTSIZE;
 	memset(ws_in_buf[slot], ISO_POISON, ISO_IN_BYTES);
 	DCFlushRange(ws_in_buf[slot], ISO_IN_BYTES);
@@ -573,7 +716,7 @@ static s32 ws_in_submit(int slot)
 
 	x->done = false;
 	x->pending = true;
-	ret = USB_ReadIsoMsgAsync(ws_fd, EP_AUDIO_IN, ISO_IN_PACKETS,
+	ret = USB_ReadIsoMsgAsync(ws_fd, EP_AUDIO_IN, ws_in_pkts,
 	                          ws_in_sizes[slot], ws_in_buf[slot],
 	                          ws_xfer_cb, x);
 	if (ret < 0) {
@@ -617,7 +760,7 @@ static void *ws_in_worker(void *arg)
 
 		ws_st.in_calls++;
 		ws_st.last_in_ret = ret;
-		for (i = 0; i < ISO_IN_PACKETS; i++)
+		for (i = 0; i < ISO_IN_PACKETS && i < (u32)ws_in_pkts; i++)
 			ws_st.last_sizes[i] = ws_in_sizes[slot][i];
 
 		if (ws_tap)
@@ -653,6 +796,21 @@ static s32 ws_out_submit(int slot)
 	for (i = 0; i < ISO_OUT_PACKETS; i++)
 		ws_out_sizes[slot][i] = ISO_OUT_PKTSIZE;
 	DCFlushRange(ws_out_sizes[slot], 32);
+
+	if (ws_out_signal) {
+		/* One transfer is 256 samples at 32 kHz: eight whole periods of
+		 * 1 kHz, so every transfer carries the same phase. */
+		static const s16 tone[32] = {
+			0, 1560, 3060, 4440, 5650, 6640, 7370, 7820,
+			7980, 7820, 7370, 6640, 5650, 4440, 3060, 1560,
+			0, -1560, -3060, -4440, -5650, -6640, -7370, -7820,
+			-7980, -7820, -7370, -6640, -5650, -4440, -3060, -1560 };
+		s16 *dst = (s16 *)ws_out_buf[slot];
+
+		for (i = 0; i < ISO_OUT_BYTES / sizeof(s16); i++)
+			dst[i] = tone[i & 31];
+		DCFlushRange(ws_out_buf[slot], ISO_OUT_BYTES);
+	}
 
 	x->done = false;
 	x->pending = true;
@@ -694,6 +852,13 @@ static void *ws_out_worker(void *arg)
 
 		ws_st.out_calls++;
 		ws_st.last_out_ret = x->res;
+		DCInvalidateRange(ws_out_sizes[slot], 32);
+		{
+			u32 i;
+
+			for (i = 0; i < ISO_OUT_PACKETS; i++)
+				ws_st.last_out_sizes[i] = ws_out_sizes[slot][i];
+		}
 		if (x->res < 0) {
 			ws_st.out_errors++;
 			usleep(1000);
@@ -709,22 +874,58 @@ static void *ws_out_worker(void *arg)
 
 /* ---- lifecycle ----------------------------------------------------------- */
 
+/* Every buffer IOS reads or writes lives in MEM2, as the SDK's do.
+ *
+ * With the isochronous buffers in MEM1, IOS completes every transfer with
+ * full-length, error-free packets -- but the data never changes after the
+ * first frame, and a one-byte control read reports its byte delivered while
+ * the buffer keeps its old contents.  A RAM dump of the Wii Speak Channel
+ * shows PMIC's transfer descriptors, size tables and audio buffers all in
+ * MEM2, with live audio in them.  So DMA buffers come from an IPC heap,
+ * created once and reused (libogc cannot destroy one). */
+#define WS_DMA_HEAP_SIZE 8192
+
+static s32 ws_dma_heap = -1;
+
+static void *ws_dma_alloc(u32 size)
+{
+	void *p;
+
+	if (ws_dma_heap < 0) {
+		ws_dma_heap = iosCreateHeap(WS_DMA_HEAP_SIZE);
+		if (ws_dma_heap < 0)
+			return NULL;
+	}
+	p = iosAlloc(ws_dma_heap, (size + 31) & ~31u);
+	if (p && ((u32)p & 31)) {
+		iosFree(ws_dma_heap, p);
+		return NULL;
+	}
+	return p;
+}
+
+static void ws_dma_free(void *p)
+{
+	if (p && ws_dma_heap >= 0)
+		iosFree(ws_dma_heap, p);
+}
+
 static void ws_free_buffers(void)
 {
 	int i;
 
-	free(ws_cmd);       ws_cmd = NULL;
-	free(ws_status);    ws_status = NULL;
-	free(ws_chunk);     ws_chunk = NULL;
+	ws_dma_free(ws_cmd);    ws_cmd = NULL;
+	ws_dma_free(ws_status); ws_status = NULL;
+	ws_dma_free(ws_chunk);  ws_chunk = NULL;
 	/* A transfer that never completed may still land in these. */
 	for (i = 0; i < ISO_SLOTS; i++) {
 		if (!ws_in_x[i].pending) {
-			free(ws_in_buf[i]);
-			free(ws_in_sizes[i]);
+			ws_dma_free(ws_in_buf[i]);
+			ws_dma_free(ws_in_sizes[i]);
 		}
 		if (!ws_out_x[i].pending) {
-			free(ws_out_buf[i]);
-			free(ws_out_sizes[i]);
+			ws_dma_free(ws_out_buf[i]);
+			ws_dma_free(ws_out_sizes[i]);
 		}
 		ws_in_buf[i] = ws_out_buf[i] = NULL;
 		ws_in_sizes[i] = ws_out_sizes[i] = NULL;
@@ -739,9 +940,9 @@ static bool ws_alloc_buffers(void)
 	bool ok = true;
 	int i;
 
-	ws_cmd       = memalign(32, 32);
-	ws_status    = memalign(32, 32);
-	ws_chunk     = memalign(32, FIRMWARE_CHUNK);
+	ws_cmd       = ws_dma_alloc(32);
+	ws_status    = ws_dma_alloc(32);
+	ws_chunk     = ws_dma_alloc(FIRMWARE_CHUNK);
 	ws_in_stack  = memalign(32, STACKSIZE);
 	ws_out_stack = memalign(32, STACKSIZE);
 	ws_ring      = memalign(32, RING_SAMPLES * sizeof(s16));
@@ -749,10 +950,10 @@ static bool ws_alloc_buffers(void)
 	/* The size tables get a whole cache line each: they are flushed and
 	 * invalidated 32 bytes at a time. */
 	for (i = 0; i < ISO_SLOTS; i++) {
-		ws_in_buf[i]    = memalign(32, ISO_IN_BYTES);
-		ws_out_buf[i]   = memalign(32, ISO_OUT_BYTES);
-		ws_in_sizes[i]  = memalign(32, 32);
-		ws_out_sizes[i] = memalign(32, 32);
+		ws_in_buf[i]    = ws_dma_alloc(ISO_IN_BYTES);
+		ws_out_buf[i]   = ws_dma_alloc(ISO_OUT_BYTES);
+		ws_in_sizes[i]  = ws_dma_alloc(32);
+		ws_out_sizes[i] = ws_dma_alloc(32);
 		if (!ws_in_buf[i] || !ws_out_buf[i] || !ws_in_sizes[i] ||
 		    !ws_out_sizes[i])
 			ok = false;
@@ -1005,7 +1206,8 @@ s32 WS_SetGain(u16 gain)
 {
 	if (gain > WS_GAIN_36dB)
 		return WS_EINVAL;
-	return ws_set(REG_SAMPLER_GAIN, gain, 0);
+	/* PMICSetGain sends arg1 = 0x0300 | gain; the upper byte is required. */
+	return ws_set(REG_SAMPLER_GAIN, (u16)(0x0300 | gain), 0);
 }
 
 s32 WS_SetMute(bool mute)
@@ -1051,13 +1253,13 @@ static s32 ws_start_streams(void)
 
 	ws_running = true;
 
-	if (LWP_CreateThread(&ws_in_thread, ws_in_worker, NULL, ws_in_stack,
+	if (LWP_CreateThread(&ws_in_thread, ws_cb_mode ? ws_in_worker_cb : ws_in_worker, NULL, ws_in_stack,
 	                     STACKSIZE, 80) < 0) {
 		ws_running = false;
 		return WS_ENOMEM;
 	}
 
-	if (!ws_out_on) {
+	if (!ws_out_on || ws_cb_mode) {
 		ws_out_thread = LWP_THREAD_NULL;
 	} else if (LWP_CreateThread(&ws_out_thread, ws_out_worker, NULL, ws_out_stack,
 	                     STACKSIZE, 80) < 0) {
@@ -1129,6 +1331,28 @@ s32 WS_Stop(void)
 	       (ws_out_x[0].pending || ws_out_x[1].pending) ? "pending" : "idle");
 
 	return WS_OK;
+}
+
+void WS_SetCallbackMode(bool on)
+{
+	ws_cb_mode = on;
+}
+
+void WS_SetInPackets(int n)
+{
+	if (n >= 1 && n <= ISO_IN_MAXPKTS)
+		ws_in_pkts = n;
+}
+
+void WS_SetBoot(int wait_ms, bool skip_reset)
+{
+	ws_boot_wait_ms = wait_ms;
+	ws_skip_reset = skip_reset;
+}
+
+void WS_SetOutSignal(int mode)
+{
+	ws_out_signal = mode;
 }
 
 void WS_SetStreams(int in_slots, bool out_stream)

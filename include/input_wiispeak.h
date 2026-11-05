@@ -81,6 +81,20 @@ s32 WS_Stop(void);
  * and whether the OUT (echo-canceller reference) stream runs at all. */
 void WS_SetStreams(int in_slots, bool out_stream);
 
+/* For experiments: 0 feeds the OUT stream silence, 1 a 1 kHz tone. */
+void WS_SetOutSignal(int mode);
+
+/* For experiments, before WS_Open(): how long to wait after the firmware
+ * upload (default 300 ms), and whether to skip the reset before it. */
+void WS_SetBoot(int wait_ms, bool skip_reset);
+
+/* For experiments: packets per IN transfer, 1 to 16 (default 8). */
+void WS_SetInPackets(int n);
+
+/* For experiments: resubmit isochronous transfers from the completion
+ * callback, as the SDK does, instead of from worker threads. */
+void WS_SetCallbackMode(bool on);
+
 /* Stops the transfer threads from queueing anything new, without waiting
  * for them or talking to the mic -- for the emergency exit. */
 void WS_Quiesce(void);
@@ -109,6 +123,9 @@ typedef struct {
 	s32 last_in_ret, last_out_ret;
 	u16 last_sizes[WS_ISO_PACKETS];
 	int last_layout;
+	/* OUT size table as IOS left it: OHCI condition code in the top
+	 * nibble, length below.  Diagnostic. */
+	u16 last_out_sizes[WS_ISO_PACKETS];
 } ws_stats;
 
 void WS_GetStats(ws_stats *out);
