@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+	<name>libwiiinput padtest</name>
+	<coder>quatric</coder>
+	<version>0.1</version>
+	<short_description>Test every controller</short_description>
+	<long_description>Shows what libwiiinput reads from every controller: Wii Remotes with a Nunchuk or Classic Controller, GameCube pads, the GameCube adapter for Wii U, USB game controllers, USB keyboards and mice. Hold A+B on a controller to rumble it; hold HOME or press RESET to exit.</long_description>
+</app>

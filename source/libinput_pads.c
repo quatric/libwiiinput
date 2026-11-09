@@ -28,6 +28,59 @@ static stick_t sticks[2];
 static bool pointer_valid;
 static float pointer_x, pointer_y, gforce_max;
 
+/* The device list of the last update (INPUT_DeviceCount/Get). */
+#define MAX_DEVICES 24
+static input_device devices[MAX_DEVICES];
+static int device_count;
+
+/* Rumble wanted, and what was last sent, per device. */
+static bool rumble_wpad[4], rumble_wpad_on[4];
+static bool rumble_pad[4], rumble_pad_on[4];
+#ifdef HAVE_WUPC
+static bool rumble_wupc[4], rumble_wupc_on[4];
+#endif
+#ifdef HAVE_SICKSAXIS
+static bool rumble_ds3, rumble_ds3_on;
+#endif
+
+static void pump_rumble(void);
+static void stop_rumble(void);
+
+static float clampf(float v, float lo, float hi)
+{
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static input_device *dev_add(input_device_kind kind, int port, const char *name, u32 held, u32 down)
+{
+    input_device *d;
+
+    if (device_count >= MAX_DEVICES)
+        return NULL;
+    d = &devices[device_count++];
+    memset(d, 0, sizeof(*d));
+    d->kind = kind;
+    d->port = port;
+    d->name = name;
+    d->held = held;
+    d->down = down;
+    d->battery = -1;
+    return d;
+}
+
+/* A GameCube-style pad's sticks and triggers into its device entry. */
+static void dev_gc_analog(input_device *d, s8 sx, s8 sy, s8 cx, s8 cy, u8 tl, u8 tr)
+{
+    if (!d)
+        return;
+    d->lx = clampf(sx / 70.0f, -1, 1);
+    d->ly = clampf(sy / 70.0f, -1, 1);
+    d->rx = clampf(cx / 60.0f, -1, 1);
+    d->ry = clampf(cy / 60.0f, -1, 1);
+    d->lt = tl / 255.0f;
+    d->rt = tr / 255.0f;
+}
+
 #ifdef HAVE_SICKSAXIS
 static struct ss_device ds3;
 static bool ds3_initialized;
@@ -56,12 +109,24 @@ static void stick_feed(int which, const char *src, float x, float y)
     }
 }
 
+static void joy_xy(const joystick_t *j, float *x, float *y)
+{
+    float a = j->ang * 0.017453292f;
+    if (j->mag < 0.01f) {
+        *x = *y = 0;
+        return;
+    }
+    *x = sinf(a) * j->mag;
+    *y = cosf(a) * j->mag;
+}
+
 static void joy_feed(int which, const char *src, const joystick_t *j)
 {
+    float x, y;
     if (j->mag < 0.01f)
         return;
-    float a = j->ang * 0.017453292f;
-    stick_feed(which, src, sinf(a) * j->mag, cosf(a) * j->mag);
+    joy_xy(j, &x, &y);
+    stick_feed(which, src, x, y);
 }
 
 static u32 map_classic(u32 b)
@@ -204,7 +269,15 @@ static void poll_ds3(void)
     if (b->right)    now |= WPAD_BUTTON_RIGHT;
 
     feed("DualShock 3", now, now & ~ds3_previous);
+    input_device *d = dev_add(INPUT_DEV_DS3, 0, "DualShock 3", now, now & ~ds3_previous);
     ds3_previous = now;
+    if (d) {
+        d->raw = now;
+        d->lx = clampf((ds3.pad.left_analog.x - 128) / 110.0f, -1, 1);
+        d->ly = clampf(-(ds3.pad.left_analog.y - 128) / 110.0f, -1, 1);
+        d->rx = clampf((ds3.pad.right_analog.x - 128) / 110.0f, -1, 1);
+        d->ry = clampf(-(ds3.pad.right_analog.y - 128) / 110.0f, -1, 1);
+    }
 
     /* Analog values are 0..255 with 128 centred and y growing downward. */
     stick_feed(INPUT_STICK_LEFT, "DualShock 3",
@@ -231,6 +304,11 @@ static void poll_gcadapter(void)
             continue;
         }
         feed("GameCube", map_gc(p.buttons), map_gc(p.buttons & ~gcad_previous[port]));
+        input_device *d = dev_add(INPUT_DEV_GCADAPTER, port, "GameCube", map_gc(p.buttons),
+                                  map_gc(p.buttons & ~gcad_previous[port]));
+        if (d)
+            d->raw = p.buttons;
+        dev_gc_analog(d, p.stick_x, p.stick_y, p.substick_x, p.substick_y, p.trigger_l, p.trigger_r);
         gcad_previous[port] = p.buttons;
         stick_feed(INPUT_STICK_LEFT, "GameCube", p.stick_x / 70.0f, p.stick_y / 70.0f);
         stick_feed(INPUT_STICK_RIGHT, "GameCube", p.substick_x / 60.0f, p.substick_y / 60.0f);
@@ -252,6 +330,11 @@ static void poll_hidpads(void)
             continue;
         }
         feed("USB Pad", map_gc(p.buttons), map_gc(p.buttons & ~hid_previous[port]));
+        input_device *d = dev_add(INPUT_DEV_USBPAD, port, "USB Pad", map_gc(p.buttons),
+                                  map_gc(p.buttons & ~hid_previous[port]));
+        if (d)
+            d->raw = p.buttons;
+        dev_gc_analog(d, p.stick_x, p.stick_y, p.substick_x, p.substick_y, p.trigger_l, p.trigger_r);
         hid_previous[port] = p.buttons;
         stick_feed(INPUT_STICK_LEFT, "USB Pad", p.stick_x / 70.0f, p.stick_y / 70.0f);
         stick_feed(INPUT_STICK_RIGHT, "USB Pad", p.substick_x / 60.0f, p.substick_y / 60.0f);
@@ -332,6 +415,7 @@ s32 inpw_pads_init(u32 flags)
 
 void inpw_pads_shutdown(void)
 {
+    stop_rumble();
 #ifdef HAVE_HIDPADS
     inpw_hidpads_shutdown();
 #endif
@@ -364,14 +448,24 @@ void inpw_pads_update(void)
     sticks[0] = sticks[1] = (stick_t){ 0, 0, 0, 0, 0, "" };
     pointer_valid = false;
     gforce_max = 0;
+    device_count = 0;
 
 #ifdef HAVE_WUPC
     WUPC_UpdateButtonStats();
     for (int ch = 0; ch < 4; ch++) {
-        feed("Wii U Pro", map_classic(WUPC_ButtonsHeld(ch)), map_classic(WUPC_ButtonsDown(ch)));
+        u32 h = map_classic(WUPC_ButtonsHeld(ch)), d = map_classic(WUPC_ButtonsDown(ch));
+        feed("Wii U Pro", h, d);
         if (WUPC_Data(ch)) {
             stick_feed(INPUT_STICK_LEFT, "Wii U Pro", WUPC_lStickX(ch) / 900.0f, WUPC_lStickY(ch) / 900.0f);
             stick_feed(INPUT_STICK_RIGHT, "Wii U Pro", WUPC_rStickX(ch) / 900.0f, WUPC_rStickY(ch) / 900.0f);
+            input_device *dev = dev_add(INPUT_DEV_PRO, ch, "Wii U Pro", h, d);
+            if (dev) {
+                dev->raw = WUPC_ButtonsHeld(ch);
+                dev->lx = clampf(WUPC_lStickX(ch) / 900.0f, -1, 1);
+                dev->ly = clampf(WUPC_lStickY(ch) / 900.0f, -1, 1);
+                dev->rx = clampf(WUPC_rStickX(ch) / 900.0f, -1, 1);
+                dev->ry = clampf(WUPC_rStickY(ch) / 900.0f, -1, 1);
+            }
         }
     }
 #endif
@@ -413,12 +507,31 @@ void inpw_pads_update(void)
         feed("Wiimote", core_h, core_d);
         feed(xsrc, xh, xd);
 
-        if (!pointer_valid) {
-            float x, y;
-            if (widescreen ? point_16_9(&wd->ir, &x, &y) : point_4_3(&wd->ir, &x, &y)) {
-                pointer_valid = true;
-                pointer_x = x;
-                pointer_y = y;
+        float x = 0, y = 0;
+        bool pointed = widescreen ? point_16_9(&wd->ir, &x, &y) : point_4_3(&wd->ir, &x, &y);
+        if (pointed && !pointer_valid) {
+            pointer_valid = true;
+            pointer_x = x;
+            pointer_y = y;
+        }
+
+        input_device *dev = dev_add(INPUT_DEV_WIIMOTE, ch, xsrc, core_h | xh, core_d | xd);
+        if (dev) {
+            dev->raw = h & 0xFFFF;
+            dev->raw_ext = ext_h;
+            dev->pointer = pointed;
+            dev->px = x;
+            dev->py = y;
+            /* The status report's level: about 0xC0 with fresh batteries. */
+            int level = WPAD_BatteryLevel(ch) * 100 / 0xC0;
+            dev->battery = level > 100 ? 100 : level;
+            if (wd->exp.type == WPAD_EXP_CLASSIC) {
+                joy_xy(&wd->exp.classic.ljs, &dev->lx, &dev->ly);
+                joy_xy(&wd->exp.classic.rjs, &dev->rx, &dev->ry);
+                dev->lt = clampf(wd->exp.classic.l_shoulder, 0, 1);
+                dev->rt = clampf(wd->exp.classic.r_shoulder, 0, 1);
+            } else if (wd->exp.type == WPAD_EXP_NUNCHUK) {
+                joy_xy(&wd->exp.nunchuk.js, &dev->lx, &dev->ly);
             }
         }
 
@@ -431,6 +544,15 @@ void inpw_pads_update(void)
 #ifdef HAVE_WIIDRC
     if (WiiDRC_Inited() && WiiDRC_Connected() && WiiDRC_ScanPads()) {
         feed("GamePad", map_drc(WiiDRC_ButtonsHeld()), map_drc(WiiDRC_ButtonsDown()));
+        input_device *dev = dev_add(INPUT_DEV_GAMEPAD, 0, "GamePad", map_drc(WiiDRC_ButtonsHeld()),
+                                    map_drc(WiiDRC_ButtonsDown()));
+        if (dev) {
+            dev->raw = WiiDRC_ButtonsHeld();
+            dev->lx = clampf(WiiDRC_lStickX() / 900.0f, -1, 1);
+            dev->ly = clampf(WiiDRC_lStickY() / 900.0f, -1, 1);
+            dev->rx = clampf(WiiDRC_rStickX() / 900.0f, -1, 1);
+            dev->ry = clampf(WiiDRC_rStickY() / 900.0f, -1, 1);
+        }
         stick_feed(INPUT_STICK_LEFT, "GamePad", WiiDRC_lStickX() / 900.0f, WiiDRC_lStickY() / 900.0f);
         stick_feed(INPUT_STICK_RIGHT, "GamePad", WiiDRC_rStickX() / 900.0f, WiiDRC_rStickY() / 900.0f);
     }
@@ -440,11 +562,19 @@ void inpw_pads_update(void)
     poll_ds3();
 #endif
 
-    PAD_ScanPads();
+    u32 gc_connected = PAD_ScanPads();
     for (int ch = 0; ch < 4; ch++) {
         feed("GameCube", map_gc(PAD_ButtonsHeld(ch)), map_gc(PAD_ButtonsDown(ch)));
         stick_feed(INPUT_STICK_LEFT, "GameCube", PAD_StickX(ch) / 70.0f, PAD_StickY(ch) / 70.0f);
         stick_feed(INPUT_STICK_RIGHT, "GameCube", PAD_SubStickX(ch) / 60.0f, PAD_SubStickY(ch) / 60.0f);
+        if (gc_connected & (1u << ch)) {
+            input_device *dev = dev_add(INPUT_DEV_GAMECUBE, ch, "GameCube", map_gc(PAD_ButtonsHeld(ch)),
+                                        map_gc(PAD_ButtonsDown(ch)));
+            if (dev)
+                dev->raw = PAD_ButtonsHeld(ch);
+            dev_gc_analog(dev, PAD_StickX(ch), PAD_StickY(ch), PAD_SubStickX(ch), PAD_SubStickY(ch),
+                          PAD_TriggerL(ch), PAD_TriggerR(ch));
+        }
     }
 
 #ifdef HAVE_GCADAPTER
@@ -461,12 +591,116 @@ void inpw_pads_update(void)
     if (pointer_valid)
         inpw_set_source("Wiimote");
 
+    pump_rumble();
+
     u32 kheld = INPUT_KeyboardPadHeld();
     u32 kdown = INPUT_KeyboardPadDown();
     all_held = pads_held | kheld;
     all_down = pads_down | kdown;
     all_up = all_prev & ~all_held;
     all_prev = all_held;
+}
+
+/* Sends what changed. */
+static void pump_rumble(void)
+{
+    for (int ch = 0; ch < 4; ch++) {
+        if (rumble_wpad[ch] != rumble_wpad_on[ch]) {
+            WPAD_Rumble(ch, rumble_wpad[ch]);
+            rumble_wpad_on[ch] = rumble_wpad[ch];
+        }
+        if (rumble_pad[ch] != rumble_pad_on[ch]) {
+            PAD_ControlMotor(ch, rumble_pad[ch] ? PAD_MOTOR_RUMBLE : PAD_MOTOR_STOP);
+            rumble_pad_on[ch] = rumble_pad[ch];
+        }
+#ifdef HAVE_WUPC
+        if (rumble_wupc[ch] != rumble_wupc_on[ch]) {
+            WUPC_Rumble(ch, rumble_wupc[ch]);
+            rumble_wupc_on[ch] = rumble_wupc[ch];
+        }
+#endif
+    }
+#ifdef HAVE_SICKSAXIS
+    if (rumble_ds3 != rumble_ds3_on && ds3_initialized && ss_is_connected(&ds3)) {
+        if (rumble_ds3)
+            ss_set_rumble(&ds3, 0xFF, 0xFF, 0xFF, 0xFF);
+        else
+            ss_set_rumble(&ds3, 0, 0, 0, 0);
+        rumble_ds3_on = rumble_ds3;
+    }
+#endif
+}
+
+int INPUT_DeviceCount(void) { return device_count; }
+
+bool INPUT_DeviceGet(int index, input_device *out)
+{
+    if (index < 0 || index >= device_count)
+        return false;
+    if (out)
+        *out = devices[index];
+    return true;
+}
+
+void INPUT_DeviceRumble(int index, bool on)
+{
+    const input_device *d;
+
+    if (index < 0 || index >= device_count)
+        return;
+    d = &devices[index];
+    switch (d->kind) {
+    case INPUT_DEV_WIIMOTE:
+        rumble_wpad[d->port] = on;
+        break;
+    case INPUT_DEV_GAMECUBE:
+        rumble_pad[d->port] = on;
+        break;
+#ifdef HAVE_WUPC
+    case INPUT_DEV_PRO:
+        rumble_wupc[d->port] = on;
+        break;
+#endif
+#ifdef HAVE_SICKSAXIS
+    case INPUT_DEV_DS3:
+        rumble_ds3 = on;
+        break;
+#endif
+#ifdef HAVE_GCADAPTER
+    case INPUT_DEV_GCADAPTER:
+        INPUT_GCAdapterRumble(d->port, on);
+        break;
+#endif
+#ifdef HAVE_HIDPADS
+    case INPUT_DEV_USBPAD:
+        INPUT_HIDPadRumble(d->port, on);
+        break;
+#endif
+    default:
+        break;
+    }
+    pump_rumble();
+}
+
+static void stop_rumble(void)
+{
+    memset(rumble_wpad, 0, sizeof(rumble_wpad));
+    memset(rumble_pad, 0, sizeof(rumble_pad));
+#ifdef HAVE_WUPC
+    memset(rumble_wupc, 0, sizeof(rumble_wupc));
+#endif
+#ifdef HAVE_SICKSAXIS
+    rumble_ds3 = false;
+#endif
+    for (int p = 0; p < 4; p++) {
+#ifdef HAVE_GCADAPTER
+        INPUT_GCAdapterRumble(p, false);
+#endif
+#ifdef HAVE_HIDPADS
+        INPUT_HIDPadRumble(p, false);
+#endif
+    }
+    pump_rumble();
 }
 
 u32 INPUT_PadsHeld(void)    { return pads_held; }

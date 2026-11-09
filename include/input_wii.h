@@ -155,6 +155,44 @@ void INPUT_GameCubeMapSet(u16 pad_buttons, u32 button);
  * Expansion controllers on that channel are unaffected. 0 restores them. */
 void INPUT_IgnoreWiimoteButtons(int chan, u32 buttons);
 
+/* ---- Every controller, one by one ----
+ * The controllers seen by the last INPUT_Update(), for test screens,
+ * player assignment and per-player input. The same calls as libwiiuinput. */
+typedef enum {
+    INPUT_DEV_GAMEPAD = 0,  /* Wii U GamePad (HAVE_WIIDRC, vWii) */
+    INPUT_DEV_WIIMOTE,      /* Wii Remote, alone or with an extension */
+    INPUT_DEV_PRO,          /* Wii U Pro Controller (HAVE_WUPC) */
+    INPUT_DEV_GAMECUBE,     /* a console GameCube port */
+    INPUT_DEV_USBPAD,       /* USB game controller with a Nintendont layout (HAVE_HIDPADS) */
+    INPUT_DEV_GCADAPTER,    /* a port of the GameCube adapter for Wii U (HAVE_GCADAPTER) */
+    INPUT_DEV_DS3           /* DualShock 3 (HAVE_SICKSAXIS) */
+} input_device_kind;
+
+typedef struct {
+    input_device_kind kind;
+    int         port;       /* channel / port / slot, from 0 */
+    const char *name;       /* "GamePad", "Wiimote", "Nunchuk", "Classic", "Wii U Pro", "GameCube",
+                               "USB Pad", "DualShock 3" */
+    u32         held;       /* folded WPAD_BUTTON_* | INPUT_BUTTON_* */
+    u32         down;
+    u32         raw;        /* the device's own bits: WIIDRC_BUTTON_*, WPAD_BUTTON_* (Wii Remote),
+                               WPAD_CLASSIC_BUTTON_* (Pro), PAD_BUTTON_* (GameCube, adapter, USB pads) */
+    u32         raw_ext;    /* a Wii Remote's extension: WPAD_NUNCHUK_BUTTON_* or WPAD_CLASSIC_BUTTON_* */
+    float       lx, ly, rx, ry; /* sticks, -1..1, y up; 0 where there is none */
+    float       lt, rt;     /* analog triggers 0..1 (Classic, GameCube, USB pad), else 0 */
+    int         battery;    /* 0..100, -1 when unknown */
+    bool        pointer;    /* Wii Remote: IR sees the sensor bar */
+    float       px, py;     /* where, in screen coordinates */
+} input_device;
+
+int  INPUT_DeviceCount(void);
+bool INPUT_DeviceGet(int index, input_device *out);
+/* Rumble the device at `index` in the current list (Wii Remote, GameCube
+ * pad, Pro Controller, adapter port, or a USB pad whose layout has a motor;
+ * the vWii GamePad has none). It keeps rumbling until turned off;
+ * INPUT_Shutdown stops everything. */
+void INPUT_DeviceRumble(int index, bool on);
+
 /* ---- GameCube controller adapter for Wii U (HAVE_GCADAPTER) ----
  * Nintendo's WUP-028 and the third-party adapters that copy it, in either
  * mode (Wii U / PC). It is looked for every two seconds, so it can be

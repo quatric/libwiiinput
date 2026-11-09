@@ -17,7 +17,13 @@ USB keyboard and mouse input for the Nintendo Wii, built on libogc.
 - USB pen tablets (`input_tablet.h`): Wacom, Huion, XP-Pen and other drawing tablets, with pressure, tilt, eraser, tablet keys and Bamboo finger touch
 - The uDraw GameTablet for the Wii, through the same `input_tablet.h` calls, with pressure and both rocker buttons
 
+- Every controller one by one (`INPUT_DeviceCount/Get`), with rumble per controller
+  (`INPUT_DeviceRumble`), and a test program for all of them (`example/padtest`)
+
 The microphone and tablet drivers are compile options, off by default (see below).
+
+For the Wii U itself (not vWii) there is [libwiiuinput](https://github.com/quatric/libwiiuinput),
+the same calls on wut.
 
 The keyboard handling was originally part of GlowWii and has been split out
 into a reusable library; mouse support is new.
@@ -106,6 +112,20 @@ INPUT_Shutdown();
 * `INPUT_IgnoreWiimoteButtons` leaves a channel's own Wii Remote buttons to another layer.
 * `INPUT_StickRaw` gives a stick before its length is clamped, for apps with their own scaling.
 * `INPUT_GCAdapterPad/Rumble/Connected` reach the Wii U GameCube adapter's ports (`WITH_GCADAPTER`).
+* `INPUT_DeviceCount()` / `INPUT_DeviceGet(i, &dev)` list the controllers seen by the last update:
+  kind, port, name, folded and raw buttons, sticks, analogue triggers, battery and the IR pointer.
+  `INPUT_DeviceRumble(i, on)` rumbles one (Wii Remote, GameCube pad, Wii U Pro, DualShock 3, an
+  adapter port or a USB pad with a motor) until turned off. libwiiuinput has the same calls.
+
+### The test program
+
+`example/padtest` shows everything the library reads: every controller on its own line (buttons,
+sticks, triggers, battery, raw bits and IR position), the folded buttons with the held ones
+highlighted, the sticks, pointer, cursor, mouse, keyboard (with what was typed) and the adapter and
+USB pad drivers' log. A+B held on a controller rumbles that controller; HOME (or Esc) held for two
+seconds, or RESET, exits. `make` there builds `boot.dol` with the GameCube adapter, USB pads and a
+fourth Wii Remote; `make CONTROLLERS=1` adds the vWii GamePad, Wii U Pro Controller and DualShock 3
+(after `make controllers` here). `make run` sends it with wiiload.
 
 ### GameCube controller adapter for Wii U
 
