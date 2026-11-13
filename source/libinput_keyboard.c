@@ -228,7 +228,7 @@ s32 inpw_keyboard_init(void)
     map_defaults();
 
     kbd_thread_should_run = true;
-    ret = LWP_CreateThread(&kbd_thread_hndl, kbd_thread, NULL, NULL, 0x4000, 0x7F);
+    ret = LWP_CreateThread(&kbd_thread_hndl, kbd_thread, NULL, NULL, 0x4000, 0x20);
     if (ret < 0) {
         kbd_thread_should_run = false;
         LWP_MutexDestroy(kbd_lock);
@@ -247,11 +247,14 @@ void inpw_keyboard_shutdown(void)
         return;
 
     kbd_thread_should_run = false;
+    /* Scan() blocks in IOS until the next key report, so closing the device
+     * first is what wakes the thread; joining first hangs on HOME until a key
+     * is pressed. */
+    USBKeyboard_Close();
     if (kbd_thread_hndl != LWP_THREAD_NULL)
         LWP_JoinThread(kbd_thread_hndl, NULL);
     kbd_thread_hndl = LWP_THREAD_NULL;
 
-    USBKeyboard_Close();
     USBKeyboard_Deinitialize();
     LWP_MutexDestroy(kbd_lock);
     kbd_lock = LWP_MUTEX_NULL;
